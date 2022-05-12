@@ -278,6 +278,8 @@ jobs:
       run: |
         sleep 360;
         cat "$GITHUB_WORKSPACE/log";
+        journalctl > ./msg.log;
+        cat ./msg.log;
         if grep -q Done "$GITHUB_WORKSPACE/log"; then
           docker stop ${{ github.job }}
         else
