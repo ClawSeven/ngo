@@ -9,8 +9,8 @@ pub struct Parks {
 }
 
 impl Parks {
-    pub fn new(parallelism: u32) -> Self {
-        let sleep_threads: Vec<_> = (0..parallelism).map(|_| Mutex::new(None)).collect();
+    pub fn new(num_vpu: u32) -> Self {
+        let sleep_threads: Vec<_> = (0..num_vpu).map(|_| Mutex::new(None)).collect();
         Self { sleep_threads }
     }
 

@@ -97,7 +97,8 @@ pub extern "C" fn occlum_ecall_init(
 
         info!("num_vcpus = {:?}", num_vcpus);
         assert!(num_vcpus > 0 && num_vcpus <= 1024);
-        async_rt::config::set_parallelism(num_vcpus);
+
+        async_rt::vcpu::set_total(num_vcpus);
 
         std::thread::spawn(move || {
             let io_uring = &crate::io_uring::SINGLETON;
