@@ -23,7 +23,7 @@ static TOTAL_VCPUS: AtomicU32 = AtomicU32::new(1);
 
 /// Get the vCPU ID of the current thread.
 ///
-/// If the current thread is not serving as a vCPU, then the method panics.
+/// If the current thread is not serving as a vCPU, return None.
 /// The vCPU IDs range from `0` to `crate::vcpu::set_total`.
 pub fn get_current() -> Option<u32> {
     let id = CURRENT_ID.load(Ordering::Relaxed);

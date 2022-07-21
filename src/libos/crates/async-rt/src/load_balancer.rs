@@ -1,9 +1,8 @@
+use crate::executor::num_vcpus;
 use crate::prelude::*;
+use crate::scheduler::SchedEntity;
 use crate::scheduler::Scheduler;
 use crate::sync::Mutex;
-// use crate::util::{SlidingWindowAverager as Averager};
-use crate::executor::num_vcpus;
-use crate::scheduler::SchedEntity;
 use crate::task::{JoinHandle, Task};
 use crate::wait::{Waiter, WaiterQueue};
 
@@ -130,7 +129,6 @@ impl MigrationTask {
             let load_a = a.1;
             let load_b = b.1;
             load_a.partial_cmp(&load_b).unwrap()
-            // load_a < load_b
         });
 
         // Migrate tasks by iterating the less busy vCPUs
@@ -154,7 +152,7 @@ impl MigrationTask {
             let num_migrated_tasks = this_scheduler.drain(
                 |task| {
                     // Need to respect affinity when doing migration
-                    let affinity = task.sched_state().affinity();
+                    let affinity = task.sched_state().affinity().read();
                     affinity.get(dst_vcpu as usize)
                 },
                 &mut drained_vec,

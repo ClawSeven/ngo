@@ -1,7 +1,9 @@
 mod atomic_bits;
+mod bitmask;
 mod parker;
 
 pub use atomic_bits::AtomicBits;
+pub use bitmask::BitMask;
 pub use parker::Parker;
 
 pub fn align_up(n: usize, a: usize) -> usize {

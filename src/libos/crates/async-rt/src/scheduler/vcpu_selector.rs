@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use crate::scheduler::local_scheduler::StatusNotifier;
 use crate::scheduler::SchedState;
-use crate::util::AtomicBits;
+use crate::util::BitMask;
+use spin::rw_lock::RwLock;
 
 /// vCPU selector.
 ///
@@ -26,8 +27,9 @@ use crate::util::AtomicBits;
 /// picks a vCPU in a round-robin fashion so that
 /// workloads are more liekly to spread across multiple vCPUs evenly.
 pub struct VcpuSelector {
-    idle_vcpu_mask: AtomicBits,
-    sleep_vcpu_mask: AtomicBits,
+    // The masks are usually accessed by iterators, so the cost of ”RwLock<BitMask>“ is much less than “AtomicBits”.
+    idle_vcpu_mask: RwLock<BitMask>,
+    sleep_vcpu_mask: RwLock<BitMask>,
     num_vcpus: u32,
 }
 
@@ -37,11 +39,13 @@ unsafe impl Sync for VcpuSelector {}
 
 impl StatusNotifier for Arc<VcpuSelector> {
     fn notify_idle_status(&self, vcpu: u32, is_idle: bool) {
-        self.idle_vcpu_mask.set(vcpu as usize, is_idle);
+        let mut idle_vcpu_mask = self.idle_vcpu_mask.write();
+        idle_vcpu_mask.set(vcpu as usize, is_idle);
     }
 
     fn notify_sleep_status(&self, vcpu: u32, is_sleep: bool) {
-        self.sleep_vcpu_mask.set(vcpu as usize, is_sleep);
+        let mut sleep_vcpu_mask = self.sleep_vcpu_mask.write();
+        sleep_vcpu_mask.set(vcpu as usize, is_sleep);
     }
 }
 
@@ -49,8 +53,8 @@ impl VcpuSelector {
     /// Create an instance.
     pub fn new(num_vcpus: u32) -> Self {
         Self {
-            idle_vcpu_mask: AtomicBits::new_zeroes(num_vcpus as usize),
-            sleep_vcpu_mask: AtomicBits::new_zeroes(num_vcpus as usize),
+            idle_vcpu_mask: RwLock::new(BitMask::new_empty(num_vcpus as usize)),
+            sleep_vcpu_mask: RwLock::new(BitMask::new_empty(num_vcpus as usize)),
             num_vcpus,
         }
     }
@@ -61,7 +65,7 @@ impl VcpuSelector {
     /// be provided.
     pub fn select_vcpu(&self, sched_state: &SchedState, has_this_vcpu: Option<u32>) -> u32 {
         // Need to respect the CPU affinity mask
-        let affinity = sched_state.affinity();
+        let affinity = sched_state.affinity().read();
         debug_assert!(affinity.iter_ones().count() > 0);
 
         debug!("start select vcpu");
@@ -93,44 +97,50 @@ impl VcpuSelector {
 
         debug!("has last vcpu: {:?}", has_last_vcpu);
 
-        // 1. This vCPU, if it is idle
-        if let Some(this_vcpu) = has_this_vcpu {
-            if self.idle_vcpu_mask.get(this_vcpu as usize) {
-                debug!("this vcpu is idle: {:?}", this_vcpu);
-                return this_vcpu;
+        {
+            let idle_vcpu_mask = self.idle_vcpu_mask.read();
+
+            // 1. This vCPU, if it is idle
+            if let Some(this_vcpu) = has_this_vcpu {
+                if idle_vcpu_mask.get(this_vcpu as usize) {
+                    debug!("this vcpu is idle: {:?}", this_vcpu);
+                    return this_vcpu;
+                }
             }
-        }
-        // 2. The last vCPU that the entity runs on, if it is idle
-        if let Some(last_vcpu) = has_last_vcpu {
-            if self.idle_vcpu_mask.get(last_vcpu as usize) {
-                debug!("last runs on vcpu is idle: {:?} ", last_vcpu);
-                return last_vcpu;
+            // 2. The last vCPU that the entity runs on, if it is idle
+            if let Some(last_vcpu) = has_last_vcpu {
+                if idle_vcpu_mask.get(last_vcpu as usize) {
+                    debug!("last runs on vcpu is idle: {:?} ", last_vcpu);
+                    return last_vcpu;
+                }
             }
-        }
-        // 3. Any idle vCPU
-        let has_idle_vcpu = self
-            .idle_vcpu_mask
-            .iter_ones()
-            .find(|idle_vcpu| affinity.get(*idle_vcpu));
-        if let Some(idle_vcpu) = has_idle_vcpu {
-            debug!("any other idle idle: {:?}", idle_vcpu);
-            return idle_vcpu as u32;
+            // 3. Any idle vCPU
+            let has_idle_vcpu = idle_vcpu_mask
+                .iter_ones()
+                .find(|idle_vcpu| affinity.get(*idle_vcpu));
+            if let Some(idle_vcpu) = has_idle_vcpu {
+                debug!("any other idle idle: {:?}", idle_vcpu);
+                return idle_vcpu as u32;
+            }
         }
 
-        // 4. The last vCPU that the entity runs on, if it is active (not sleeping)
-        if let Some(last_vcpu) = has_last_vcpu {
-            if !self.sleep_vcpu_mask.get(last_vcpu as usize) {
-                debug!("last runs on vcpu is not sleep: {:?}", last_vcpu);
-                return last_vcpu;
+        {
+            let sleep_vcpu_mask = self.sleep_vcpu_mask.read();
+
+            // 4. The last vCPU that the entity runs on, if it is active (not sleeping)
+            if let Some(last_vcpu) = has_last_vcpu {
+                if !sleep_vcpu_mask.get(last_vcpu as usize) {
+                    debug!("last runs on vcpu is not sleep: {:?}", last_vcpu);
+                    return last_vcpu;
+                }
             }
-        }
-        // 5. Any active (non-sleeping) vCPU
-        let has_active_vcpu = self
-            .sleep_vcpu_mask
-            .iter_zeroes()
-            .find(|active_vcpu| affinity.get(*active_vcpu));
-        if let Some(active_vcpu) = has_active_vcpu {
-            return active_vcpu as u32;
+            // 5. Any active (non-sleeping) vCPU
+            let has_active_vcpu = sleep_vcpu_mask
+                .iter_zeroes()
+                .find(|active_vcpu| affinity.get(*active_vcpu));
+            if let Some(active_vcpu) = has_active_vcpu {
+                return active_vcpu as u32;
+            }
         }
 
         // 6. The last vCPU that the entity runs on, regardless of whether it is

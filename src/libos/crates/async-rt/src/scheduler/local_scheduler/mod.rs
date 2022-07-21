@@ -106,6 +106,10 @@ impl<E: SchedEntity> LocalScheduler<E> {
         }
     }
 
+    pub fn parker(&self) -> &Parker {
+        &self.parker
+    }
+
     /// Enqueue an entity.
     pub fn enqueue(&self, entity: &Arc<E>) {
         // To ensure that an entity can never be enqueued twice
@@ -147,24 +151,6 @@ impl<E: SchedEntity> LocalScheduler<E> {
     pub fn len(&self) -> usize {
         self.len.load(Relaxed) as usize
     }
-
-    // Dequeue an entity.
-    //
-    // The scheduler policy is to select the entity with the highest
-    // effective priority, which reflects how "interactive" the code
-    // of an entity is.
-    // fn dequeue(&self) -> Option<Arc<E>> {
-    //     loop {
-    //         if let Some(entity) = self.try_dequeue() {
-    //             return Some(entity);
-    //         }
-    //         if EXECUTOR.is_shutdown() {
-    //             break;
-    //         }
-    //         self.wait_enqueue();
-    //     }
-    //     return None;
-    // }
 
     fn try_dequeue(&self) -> Option<Arc<E>> {
         loop {

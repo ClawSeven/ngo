@@ -1,6 +1,5 @@
 //! Scheduler.
 
-// use core::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 mod entity;
@@ -25,7 +24,6 @@ use vcpu_selector::VcpuSelector;
 pub struct Scheduler<E> {
     local_schedulers: Arc<[LocalScheduler<E>]>,
     vcpu_selector: Arc<VcpuSelector>,
-    // is_shutdown: AtomicBool,
 }
 
 impl<E: SchedEntity> Scheduler<E> {
@@ -44,11 +42,9 @@ impl<E: SchedEntity> Scheduler<E> {
             // Safety. All elements in the slice has been initialized.
             unsafe { uninit_schedulers.assume_init() }
         };
-        // let is_shutdown = AtomicBool::new(false);
         Self {
             local_schedulers,
             vcpu_selector,
-            // is_shutdown,
         }
     }
 
@@ -92,5 +88,11 @@ impl<E: SchedEntity> Scheduler<E> {
     pub fn wait_enqueue(&self, this_vcpu: u32) {
         let local_scheduler = &self.local_schedulers[this_vcpu as usize];
         local_scheduler.wait_enqueue();
+    }
+
+    pub fn wake_all(&self) {
+        for thread_id in 0..self.num_vcpus() {
+            self.local_schedulers[thread_id as usize].parker().unpark();
+        }
     }
 }

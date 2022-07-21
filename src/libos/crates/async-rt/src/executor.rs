@@ -34,7 +34,6 @@ pub(crate) struct Executor {
     scheduler: Arc<Scheduler<Task>>,
     is_shutdown: AtomicBool,
     load_balancer: LoadBalancer,
-    //scheduler: Box<dyn Scheduler>,
 }
 
 impl Executor {
@@ -67,7 +66,10 @@ impl Executor {
         debug_assert!(this_vcpu < self.num_vcpus);
 
         vcpu::set_current(this_vcpu);
-        // crate::task::current::set_vcpu_id(this_vcpu as u32);
+
+        let local_schedulers = self.scheduler.local_schedulers();
+        let parker = local_schedulers[this_vcpu as usize].parker();
+        parker.register();
 
         // Todo: need retries
         'outer: loop {
@@ -85,10 +87,6 @@ impl Executor {
 
                 self.scheduler.wait_enqueue(this_vcpu);
             }
-
-            // if task.is_none() || self.is_shutdown() {
-            //     break;
-            // }
 
             debug_assert!(task.is_some());
             let task = task.unwrap();
@@ -141,6 +139,7 @@ impl Executor {
             crate::task::current::reset();
         }
 
+        parker.unregister();
         vcpu::clear_current();
         // todo: remove this part into shutdown
         let num = self.running_vcpus.load(Ordering::Relaxed);
@@ -183,7 +182,7 @@ impl Executor {
         self.stop_load_balancer();
         self.is_shutdown.store(true, Ordering::Relaxed);
 
-        // Todo: unpark all vcpus
+        self.scheduler.wake_all();
         crate::time::wake_timer_wheel(&Duration::default()); // wake the time wheel right now
     }
 

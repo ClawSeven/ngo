@@ -172,7 +172,7 @@ impl Default for SchedAgent {
 
 fn update_affinity(task: &Arc<Task>, affinity: &CpuSet) {
     let ncores = CpuSet::ncores();
-    let task_affinity = task.sched_state().affinity();
+    let mut task_affinity = task.sched_state().affinity().write();
     for (idx, bit) in affinity.iter().enumerate() {
         if idx >= ncores {
             break;

@@ -2,7 +2,8 @@ use std::sync::atomic::{AtomicBool, AtomicI8, AtomicU32, Ordering::*};
 
 use super::timeslice::calculate_timeslice;
 use crate::scheduler::Priority;
-use crate::util::AtomicBits;
+use crate::util::BitMask;
+use spin::rw_lock::RwLock;
 
 /// A schedulable entity.
 pub trait SchedEntity {
@@ -22,8 +23,7 @@ pub struct SchedState {
     prio_adjust: AtomicI8,
     is_enqueued: AtomicBool,
     timeslice_ms: AtomicU32,
-    // affinity may need rwlock
-    affinity: AtomicBits,
+    affinity: RwLock<BitMask>,
     vcpu: AtomicU32,
 }
 
@@ -35,7 +35,7 @@ impl SchedState {
             prio_adjust: AtomicI8::new(0),
             is_enqueued: AtomicBool::new(false),
             timeslice_ms: AtomicU32::new(0),
-            affinity: AtomicBits::new_ones(num_vcpus as usize),
+            affinity: RwLock::new(BitMask::new_full(num_vcpus as usize)),
             vcpu: AtomicU32::new(Self::NONE_VCPU),
         };
         new_self.assign_timeslice();
@@ -74,7 +74,8 @@ impl SchedState {
     const MIN_PRIO_ADJUST: i8 = -8;
 
     /// Returns the affinity mask.
-    pub fn affinity(&self) -> &AtomicBits {
+    // pub fn affinity(&self) -> &AtomicBits {
+    pub fn affinity(&self) -> &RwLock<BitMask> {
         &self.affinity
     }
 
