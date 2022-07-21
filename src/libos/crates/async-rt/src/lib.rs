@@ -52,6 +52,7 @@ extern crate sgx_untrusted_alloc;
 #[cfg(not(feature = "sgx"))]
 pub mod bench;
 pub mod executor;
+mod load_balancer;
 mod macros;
 mod parks;
 pub mod prelude;

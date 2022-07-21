@@ -70,6 +70,7 @@ fn init_runner_threads() {
                 crate::executor::run_tasks();
             });
         }
+        crate::executor::EXECUTOR.start_load_balancer();
     });
 }
 

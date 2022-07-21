@@ -1,11 +1,11 @@
 use crate::executor::EXECUTOR;
 use spin::{Mutex, MutexGuard};
 use std::ops::Deref;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering::*};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::*};
 use std::sync::Arc;
 
 use crate::prelude::*;
-use crate::scheduler::{SchedEntity, SchedState};
+use crate::scheduler::SchedEntity;
 use crate::util::Parker;
 
 pub use self::runqueues::RunQueues;
@@ -217,7 +217,7 @@ impl<E: SchedEntity> LocalScheduler<E> {
     ///
     /// This method is useful for migration tasks from one vCPU to another
     /// during load balancing.
-    fn drain<F>(&self, mut cond: F, drained: &mut Vec<Arc<E>>) -> usize
+    pub fn drain<F>(&self, mut cond: F, drained: &mut Vec<Arc<E>>) -> usize
     where
         F: FnMut(&E) -> bool,
     {

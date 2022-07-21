@@ -1,10 +1,7 @@
+use crate::scheduler::{Priority, SchedEntity};
 use std::collections::VecDeque;
 use std::mem::{self, MaybeUninit};
 use std::sync::Arc;
-
-use spin::Mutex;
-
-use crate::scheduler::{Priority, SchedEntity, SchedState};
 
 /// Runqueues of different priorities.
 ///

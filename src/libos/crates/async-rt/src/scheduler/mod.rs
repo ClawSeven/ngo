@@ -1,6 +1,6 @@
 //! Scheduler.
 
-use core::sync::atomic::AtomicBool;
+// use core::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 mod entity;

@@ -1,7 +1,11 @@
+use crate::prelude::*;
+use crate::scheduler::Scheduler;
 use crate::sync::Mutex;
-use crate::scheduler::{Scheduler};
-use crate::util::{SlidingWindowAverager as Averager};
-use crate::wait::{WaiterQueue};
+// use crate::util::{SlidingWindowAverager as Averager};
+use crate::executor::num_vcpus;
+use crate::scheduler::SchedEntity;
+use crate::task::{JoinHandle, Task};
+use crate::wait::{Waiter, WaiterQueue};
 
 /// A load balancer.
 ///
@@ -12,11 +16,11 @@ pub struct LoadBalancer {
     // The state shared between all migration tasks
     shared: Arc<Shared>,
     // The handle of the migration tasks
-    join_handles: Mutex<Vec<JoinHandle>>,
+    join_handles: Mutex<Vec<JoinHandle<()>>>,
 }
 
 struct Shared {
-    scheduler: Arc<Scheduler>,
+    scheduler: Arc<Scheduler<Task>>,
     // Whether the migration tasks should stop
     should_stop: AtomicBool,
     // Notify the migration tasks to stop
@@ -24,20 +28,20 @@ struct Shared {
 }
 
 impl LoadBalancer {
-    /// Create a load balancer given the scheduler that is currently in 
+    /// Create a load balancer given the scheduler that is currently in
     /// charge of scheduling tasks of async_rt.
-    pub fn new(scheduler: Arc<Scheduler>) -> Self {
-        let shared = {
+    pub fn new(scheduler: Arc<Scheduler<Task>>) -> Self {
+        let shared = Arc::new({
             let num_vcpus = scheduler.num_vcpus();
             Shared {
                 scheduler,
                 should_stop: AtomicBool::new(false),
                 stop_wq: WaiterQueue::new(),
             }
-        };
+        });
         Self {
             shared,
-            join_handles: Mutex::new(None),
+            join_handles: Mutex::new(Vec::new()),
         }
     }
 
@@ -50,10 +54,11 @@ impl LoadBalancer {
 
         // Spawn the per-vCPU tasks
         let num_vcpus = self.shared.scheduler.num_vcpus();
+
         for this_vcpu in 0..num_vcpus {
             // TODO: add affinity mask
             let task = MigrationTask::new(this_vcpu, self.shared.clone());
-            let join_handle = crate::task::spawn(async move || {
+            let join_handle = crate::task::spawn(async move {
                 task.run().await;
             });
             join_handles.push(join_handle);
@@ -68,14 +73,14 @@ impl LoadBalancer {
         }
 
         let should_stop = &self.shared.should_stop;
-        should_stop.store(true, Relaxed);
+        should_stop.store(true, Ordering::Relaxed);
         self.shared.stop_wq.wake_all();
 
-        for join_handle in join_handles {
+        for join_handle in join_handles.drain(..) {
             join_handle.await;
         }
 
-        should_stop.store(false, Relaxed);
+        should_stop.store(false, Ordering::Relaxed);
     }
 }
 
@@ -89,58 +94,54 @@ impl MigrationTask {
     const INTERVAL_MS: u32 = 50;
 
     pub fn new(this_vcpu: u32, shared: Arc<Shared>) -> Self {
-        Self {
-            this_vcpu,
-            shared,
-        }
+        Self { this_vcpu, shared }
     }
 
     pub async fn run(self) {
         let mut waiter = Waiter::new();
         let stop_wq = &self.shared.stop_wq;
         stop_wq.enqueue(&mut waiter);
-        while !shared.should_stop.load(Relaxed) {
+        while !self.shared.should_stop.load(Ordering::Relaxed) {
             self.do_migration();
 
-            let mut timeout = Duration::millisec(Self::INTERVAL_MS);
+            let mut timeout = Duration::from_millis(Self::INTERVAL_MS.into());
             let _ = waiter.wait_timeout(Some(&mut timeout)).await;
             waiter.reset();
         }
         stop_wq.dequeue(&mut waiter);
     }
 
-    fn do_migration(&self) {
-        let mut num_migrated_tasks = 0;
+    fn do_migration(&self) -> i32 {
+        let mut total_migrated_tasks = 0;
 
-        // Find vCPUs that are less busy than this vCPU. We only migrate 
+        // Find vCPUs that are less busy than this vCPU. We only migrate
         // tasks from this vCPU to less busy vCPUs.
         let this_vcpu = self.this_vcpu;
-        let this_load = local_schedulers[this_vcpu].len();
-        let local_schedulers = self.scheduler.local_schedulers();
-        let mut less_busy_vcpus: Vec<(usize, u32)> = (0..num_vcpus)
+        let local_schedulers = self.shared.scheduler.local_schedulers();
+        let this_load = local_schedulers[this_vcpu as usize].len();
+        let mut less_busy_vcpus: Vec<(u32, usize)> = (0..num_vcpus())
             .map(|vcpu| {
-                let load = local_schedulers[vcpu as usize].len()
+                let load = local_schedulers[vcpu as usize].len();
                 (vcpu, load)
             })
-            .filter(|(vcpu, load)| {
-                vcpu != this_vcpu && load < this_load
-            })
+            .filter(|(vcpu, load)| *vcpu != this_vcpu && *load < this_load)
             .collect();
         less_busy_vcpus.sort_unstable_by(|a, b| {
             let load_a = a.1;
             let load_b = b.1;
-            load_a < load_b
+            load_a.partial_cmp(&load_b).unwrap()
+            // load_a < load_b
         });
 
         // Migrate tasks by iterating the less busy vCPUs
-        let this_scheduler = &local_schedulers[this_vcpu];
+        let this_scheduler = &local_schedulers[this_vcpu as usize];
         for (dst_vcpu, dst_load) in less_busy_vcpus {
             // Get the latest load of this vCPU
             let this_load = this_scheduler.len();
 
-            // The load of the src vCPU must be higher than the dst vCPU by 
+            // The load of the src vCPU must be higher than the dst vCPU by
             // at least 2.
-            if this_load <= dst_load + 2{
+            if this_load <= dst_load + 2 {
                 break;
             }
 
@@ -148,21 +149,23 @@ impl MigrationTask {
             if max_tasks_to_migrate == 0 {
                 break;
             }
-            let migrated_tasks = this_scheduler.drain(
-                max_tasks_to_migrate,
+
+            let mut drained_vec = Vec::with_capacity(max_tasks_to_migrate);
+            let num_migrated_tasks = this_scheduler.drain(
                 |task| {
                     // Need to respect affinity when doing migration
                     let affinity = task.sched_state().affinity();
-                    affinity.get(dst_vcpu)
-                });
-            num_migrated_tasks += migrated_tasks.len(); 
+                    affinity.get(dst_vcpu as usize)
+                },
+                &mut drained_vec,
+            );
+            total_migrated_tasks += num_migrated_tasks;
 
-            dst_scheduler = &load_schedulers[dst_vcpu as usize];
-            for task in tasks {
-                dst_scheduler.enqueue(task);
+            let dst_scheduler = &local_schedulers[dst_vcpu as usize];
+            for task in drained_vec {
+                dst_scheduler.enqueue(&task);
             }
         }
-
-        num_migrated_tasks
+        total_migrated_tasks as i32
     }
 }

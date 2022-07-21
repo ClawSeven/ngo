@@ -1,10 +1,9 @@
 use futures::task::waker_ref;
 
-use crate::parks::Parks;
+use crate::load_balancer::LoadBalancer;
 use crate::prelude::*;
 #[allow(unused_imports)]
 use crate::task::Task;
-use crate::time::TimerFutureEntry;
 use crate::vcpu;
 
 use crate::scheduler::Scheduler;
@@ -32,8 +31,9 @@ lazy_static! {
 pub(crate) struct Executor {
     num_vcpus: u32,
     running_vcpus: AtomicU32,
-    scheduler: Scheduler<Task>,
+    scheduler: Arc<Scheduler<Task>>,
     is_shutdown: AtomicBool,
+    load_balancer: LoadBalancer,
     //scheduler: Box<dyn Scheduler>,
 }
 
@@ -44,14 +44,16 @@ impl Executor {
         }
 
         let running_vcpus = AtomicU32::new(0);
-        let scheduler = Scheduler::new(num_vcpus);
+        let scheduler = Arc::new(Scheduler::new(num_vcpus));
         let is_shutdown = AtomicBool::new(false);
+        let load_balancer = LoadBalancer::new(scheduler.clone());
 
         let new_self = Self {
             num_vcpus,
             running_vcpus,
             scheduler,
             is_shutdown,
+            load_balancer,
         };
         Ok(new_self)
     }
@@ -178,9 +180,18 @@ impl Executor {
     }
 
     pub fn shutdown(&self) {
+        self.stop_load_balancer();
         self.is_shutdown.store(true, Ordering::Relaxed);
 
         // Todo: unpark all vcpus
         crate::time::wake_timer_wheel(&Duration::default()); // wake the time wheel right now
+    }
+
+    pub fn start_load_balancer(&self) {
+        self.load_balancer.start();
+    }
+
+    pub fn stop_load_balancer(&self) {
+        self.load_balancer.stop();
     }
 }
