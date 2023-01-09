@@ -139,6 +139,48 @@ impl<A: Addr, R: Runtime> NetlinkSocket<A, R> {
         res
     }
 
+    pub async fn shutdown(&self, how: Shutdown) -> Result<()> {
+        match how {
+            Shutdown::Read => {
+                self.common.host_shutdown(how)?;
+                self.receiver.shutdown();
+                self.common.pollee().add_events(Events::IN);
+            }
+            Shutdown::Write => {
+                if self.sender.is_empty() {
+                    self.common.host_shutdown(how)?;
+                }
+                self.sender.shutdown();
+                self.common.pollee().add_events(Events::OUT);
+            }
+            Shutdown::Both => {
+                self.common.host_shutdown(Shutdown::Read)?;
+                if self.sender.is_empty() {
+                    self.common.host_shutdown(Shutdown::Write)?;
+                }
+                self.receiver.shutdown();
+                self.sender.shutdown();
+                self.common
+                    .pollee()
+                    .add_events(Events::IN | Events::OUT | Events::HUP);
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn close(&self) -> Result<()> {
+        self.sender.shutdown();
+        self.receiver.shutdown();
+        self.common.set_closed();
+        self.cancel_requests().await;
+        Ok(())
+    }
+
+    async fn cancel_requests(&self) {
+        self.receiver.cancel_recv_requests().await;
+        self.sender.try_clear_msg_queue_when_close().await;
+    }
+
     pub fn poll(&self, mask: Events, poller: Option<&Poller>) -> Events {
         let pollee = self.common.pollee();
         pollee.poll(mask, poller)
